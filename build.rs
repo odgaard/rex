@@ -1,10 +1,23 @@
+use std::env;
+use std::path::PathBuf;
+
 fn main() {
-    //println!("cargo:rustc-link-search=native=.");
-    //println!("cargo:rustc-link-lib=static=yourlibname"); // If using a static library
-    //println!("cargo:rustc-link-lib=dylib=yourlibname");  // If using a dynamic library
+    let dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let path = PathBuf::from(dir);
 
-    // If you have individual .o files
-    println!("cargo:rustc-link-arg=Trainer.o");
-    println!("cargo:rustc-link-arg=Compressor.o");
+    // Specify the directory containing the .a files
+    println!("cargo:rustc-link-search=native={}", path.display());
+
+    // Link against Compressor.a
+    println!("cargo:rustc-link-lib=static=Compressor");
+
+    // Link against Trainer.a
+    println!("cargo:rustc-link-lib=static=Trainer");
+
+    // Link against C++ standard library
+    println!("cargo:rustc-link-lib=dylib=stdc++");
+
+    // Rerun the build script if the static libraries change
+    println!("cargo:rerun-if-changed=libCompressor.a");
+    println!("cargo:rerun-if-changed=libTrainer.a");
 }
-

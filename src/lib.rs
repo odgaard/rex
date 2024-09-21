@@ -1,23 +1,23 @@
-use std::fs::File;
-use std::process::Command;
-use std::sync::Arc;
-use std::path::{Path, PathBuf};
-use std::io::{BufRead, BufReader, Write};
+use libc::{c_char, c_int};
+use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
-use rand::Rng;
-use libc::{c_char, c_int};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
 
+use chrono::NaiveDateTime;
 use pyo3::prelude::*;
 use zstd::stream::read::Decoder;
-use chrono::NaiveDateTime;
 
-use arrow::record_batch::RecordBatch;
 use arrow::array::{StringArray, UInt64Array};
-use arrow::datatypes::{Schema, Field, DataType};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_writer::ArrowWriter;
-use parquet::file::properties::WriterProperties;
 use parquet::basic::Compression;
+use parquet::file::properties::WriterProperties;
 
 const CHUNK_SIZE: usize = 67108864;
 const TOTAL_SAMPLE_LINES: usize = 3000000;
@@ -30,24 +30,19 @@ fn get_type(query: &str) -> i32 {
     // Define the CharTable as per the C++ code
     const CHAR_TABLE: [i32; 128] = [
         // 0-31: Control characters and spaces
-        32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,
-        32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,
-        // 32-47: Symbols
-        32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, // 32-47: Symbols
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
         // 48-57: '0'-'9' (Digits)
-        1,1,1,1,1,1,1,1,1,1,
-        // 58-63: Symbols
-        32,32,32,32,32,32,
-        // 64: '@' (Special character)
-        4,
-        // 65-90: 'A'-'Z' (Uppercase letters)
-        2,2,2,2,2,2,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 58-63: Symbols
+        32, 32, 32, 32, 32, 32, // 64: '@' (Special character)
+        4,  // 65-90: 'A'-'Z' (Uppercase letters)
+        2, 2, 2, 2, 2, 2, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
         // 91-96: Symbols
-        32,32,32,32,32,32,
-        // 97-122: 'a'-'z' (Lowercase letters)
-        4,4,4,4,4,4,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,
-        // 123-127: Symbols
-        32,32,32,32,32,
+        32, 32, 32, 32, 32, 32, // 97-122: 'a'-'z' (Lowercase letters)
+        4, 4, 4, 4, 4, 4, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+        16, 16, // 123-127: Symbols
+        32, 32, 32, 32, 32,
     ];
 
     let mut type_accum: i32 = 0;
@@ -76,38 +71,68 @@ fn get_all_types(type_value: i32) -> Vec<i32> {
 }
 
 extern "C" {
-    fn trainer_wrapper_c(sample_str: *const c_char, output_path: *const c_char) -> c_int;
-    fn compressor_wrapper_c(chunk: *const c_char, output_path: *const c_char, template_path: *const c_char, prefix: c_int) -> c_int;
+    fn trainer_wrapper(sample_str: *const c_char, output_path: *const c_char) -> c_int;
+    fn compressor_wrapper(
+        chunk: *const c_char,
+        output_path: *const c_char,
+        template_path: *const c_char,
+        prefix: c_int,
+    ) -> c_int;
 }
 
-fn trainer_wrapper(sample_str: &str, output_path: &str) -> PyResult<()> {
-    let sample_str_c = CString::new(sample_str).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    let output_path_c = CString::new(output_path).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    
+fn trainer_wrapper_rust(sample_str: &str, output_path: &str) -> PyResult<()> {
+    let sample_str_c = CString::new(sample_str)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+    let output_path_c = CString::new(output_path)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+
     unsafe {
-        let result = trainer_wrapper_c(sample_str_c.as_ptr(), output_path_c.as_ptr());
+        let result = trainer_wrapper(sample_str_c.as_ptr(), output_path_c.as_ptr());
         if result != 0 {
-            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("trainer_wrapper_c failed"));
+            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "trainer_wrapper_c failed",
+            ));
         }
     }
     Ok(())
 }
 
-fn compressor_wrapper(chunk: &str, output_path: &str, template_path: &str, prefix: i32) -> PyResult<()> {
-    let chunk_c = CString::new(chunk).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    let output_path_c = CString::new(output_path).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    let template_path_c = CString::new(template_path).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    
+fn compressor_wrapper_rust(
+    chunk: &str,
+    output_path: &str,
+    template_path: &str,
+    prefix: i32,
+) -> PyResult<()> {
+    let chunk_c = CString::new(chunk)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+    let output_path_c = CString::new(output_path)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+    let template_path_c = CString::new(template_path)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+
     unsafe {
-        let result = compressor_wrapper_c(chunk_c.as_ptr(), output_path_c.as_ptr(), template_path_c.as_ptr(), prefix as c_int);
+        let result = compressor_wrapper(
+            chunk_c.as_ptr(),
+            output_path_c.as_ptr(),
+            template_path_c.as_ptr(),
+            prefix as c_int,
+        );
         if result != 0 {
-            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("compressor_wrapper_c failed"));
+            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "compressor_wrapper_c failed",
+            ));
         }
     }
     Ok(())
 }
 
-fn get_variable_info(total_chunks: usize, group_number: usize) -> PyResult<(HashMap<usize, HashSet<(i32, i32)>>, HashMap<i32, Vec<(i32, i32)>>)> {
+fn get_variable_info(
+    total_chunks: usize,
+    group_number: usize,
+) -> PyResult<(
+    HashMap<usize, HashSet<(i32, i32)>>,
+    HashMap<i32, Vec<(i32, i32)>>,
+)> {
     let mut variable_to_type = HashMap::new();
     let mut chunk_variables: HashMap<usize, HashSet<(i32, i32)>> = HashMap::new();
     let mut eid_to_variables: HashMap<i32, Vec<(i32, i32)>> = HashMap::new();
@@ -120,14 +145,28 @@ fn get_variable_info(total_chunks: usize, group_number: usize) -> PyResult<(Hash
         for line in reader.lines() {
             let line = line?;
             let mut parts = line.split_whitespace();
-            let variable_str = parts.next().ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid variable string"))?;
-            let tag = parts.next().ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid tag"))?
+            let variable_str = parts.next().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid variable string")
+            })?;
+            let tag = parts
+                .next()
+                .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid tag"))?
                 .parse::<i32>()?;
 
             let mut var_parts = variable_str.split('_');
-            let a = var_parts.next().and_then(|s| s.strip_prefix("V")).ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid variable format"))?
+            let a = var_parts
+                .next()
+                .and_then(|s| s.strip_prefix("V"))
+                .ok_or_else(|| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid variable format")
+                })?
                 .parse::<i32>()?;
-            let b = var_parts.next().and_then(|s| s.strip_prefix("V")).ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid variable format"))?
+            let b = var_parts
+                .next()
+                .and_then(|s| s.strip_prefix("V"))
+                .ok_or_else(|| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid variable format")
+                })?
                 .parse::<i32>()?;
 
             let variable = (a, b);
@@ -140,7 +179,12 @@ fn get_variable_info(total_chunks: usize, group_number: usize) -> PyResult<(Hash
     Ok((chunk_variables, eid_to_variables))
 }
 
-fn compress_chunk(chunk_file_counter: usize, current_chunk: &str, template_name: &str, group_number: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn compress_chunk(
+    chunk_file_counter: usize,
+    current_chunk: &str,
+    template_name: &str,
+    group_number: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let dir_name = format!("variable_{}", chunk_file_counter);
     let tag_name = format!("variable_tag_{}.txt", chunk_file_counter);
 
@@ -158,15 +202,24 @@ fn compress_chunk(chunk_file_counter: usize, current_chunk: &str, template_name:
     std::fs::create_dir_all(&dir_path)?;
 
     let chunk_filename = format!("compressed/{}/chunk{:04}", group_number, chunk_file_counter);
-    compressor_wrapper(current_chunk, &chunk_filename, template_name, chunk_file_counter as i32)?;
+    compressor_wrapper_rust(
+        current_chunk,
+        &chunk_filename,
+        template_name,
+        chunk_file_counter as i32,
+    )?;
 
     // Rename files
     let source_dir = dir_path;
-    let target_dir = Path::new("compressed").join(group_number.to_string()).join(format!("variable_{}", chunk_file_counter));
+    let target_dir = Path::new("compressed")
+        .join(group_number.to_string())
+        .join(format!("variable_{}", chunk_file_counter));
     std::fs::rename(&source_dir, &target_dir)?;
 
     let source_tag = tag_path;
-    let target_tag = Path::new("compressed").join(group_number.to_string()).join(format!("variable_{}_tag.txt", chunk_file_counter));
+    let target_tag = Path::new("compressed")
+        .join(group_number.to_string())
+        .join(format!("variable_{}_tag.txt", chunk_file_counter));
     std::fs::rename(&source_tag, &target_tag)?;
 
     Ok(())
@@ -182,13 +235,21 @@ fn to_pyerr(err: Box<dyn std::error::Error>) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(err.to_string())
 }
 
-fn write_parquet_file(parquet_files_prefix: &str, table: &RecordBatch) -> Result<(), Box<dyn std::error::Error>> {
+fn write_parquet_file(
+    parquet_files_prefix: &str,
+    table: &RecordBatch,
+) -> Result<(), Box<dyn std::error::Error>> {
     let writer_properties = WriterProperties::builder()
         .set_compression(Compression::ZSTD(Default::default()))
         .build();
 
     let mut parquet_file_counter = 0;
-    while std::path::Path::new(&format!("{}{}.parquet", parquet_files_prefix, parquet_file_counter)).exists() {
+    while std::path::Path::new(&format!(
+        "{}{}.parquet",
+        parquet_files_prefix, parquet_file_counter
+    ))
+    .exists()
+    {
         parquet_file_counter += 1;
     }
 
@@ -229,17 +290,21 @@ fn compress_logs(
 
     for file_path in files {
         let file = File::open(&file_path)?;
-        let reader: Box<dyn BufRead> = if Path::new(&file_path).extension().and_then(|s| s.to_str()) == Some("zst") {
-            Box::new(BufReader::new(Decoder::new(file).map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?))
-        } else {
-            Box::new(BufReader::new(file))
-        };
+        let reader: Box<dyn BufRead> =
+            if Path::new(&file_path).extension().and_then(|s| s.to_str()) == Some("zst") {
+                Box::new(BufReader::new(Decoder::new(file).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string())
+                })?))
+            } else {
+                Box::new(BufReader::new(file))
+            };
 
         let mut last_timestamp = 0;
         let mut found_valid_timestamp = false;
 
         for line in reader.lines() {
-            let line = line.map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+            let line =
+                line.map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
             if line.is_empty() {
                 continue;
             }
@@ -247,7 +312,10 @@ fn compress_logs(
             // Attempt to parse the timestamp
             let mut epoch_ts = if line.len() >= timestamp_bytes {
                 let extract_timestamp_from_this_line = &line[..timestamp_bytes];
-                match NaiveDateTime::parse_from_str(extract_timestamp_from_this_line, &timestamp_format) {
+                match NaiveDateTime::parse_from_str(
+                    extract_timestamp_from_this_line,
+                    &timestamp_format,
+                ) {
                     Ok(dt) => dt.timestamp() as u64,
                     Err(_) => last_timestamp,
                 }
@@ -260,7 +328,11 @@ fn compress_logs(
                 if last_timestamp == 0 {
                     eprintln!("Unable to backfill timestamp for a log line, most likely because the start of a file does not contain valid timestamp");
                     eprintln!("This will lead to wrong extracted timestamps");
-                    eprintln!("Attempted to parse '{}' with '{}'", &line[..std::cmp::min(timestamp_bytes, line.len())], timestamp_format);
+                    eprintln!(
+                        "Attempted to parse '{}' with '{}'",
+                        &line[..std::cmp::min(timestamp_bytes, line.len())],
+                        timestamp_format
+                    );
                 }
                 // Use last_timestamp even if it's 0
                 epoch_ts = last_timestamp;
@@ -293,7 +365,8 @@ fn compress_logs(
                 let batch = RecordBatch::try_new(
                     Arc::new(schema.clone()),
                     vec![Arc::new(timestamp_array), Arc::new(log_array)],
-                ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+                )
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
                 write_parquet_file(&parquet_files_prefix, &batch).map_err(to_pyerr)?;
 
@@ -310,7 +383,7 @@ fn compress_logs(
     }
 
     let samples_str = samples.join("\n");
-    trainer_wrapper(&samples_str, &template_prefix)?;
+    trainer_wrapper_rust(&samples_str, &template_prefix)?;
 
     for (chunk_index, chunk) in chunks.iter().enumerate() {
         compress_chunk(chunk_index, chunk, &template_prefix, group_number).map_err(to_pyerr)?;
@@ -320,35 +393,49 @@ fn compress_logs(
     Ok(())
 }
 
-
-
-
-
-fn process_compressed_chunks(chunks: &[String], group_number: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn process_compressed_chunks(
+    chunks: &[String],
+    group_number: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let total_chunks = chunks.len();
     let (chunk_variables, eid_to_variables) = get_variable_info(total_chunks, group_number)?;
     let mut touched_types = std::collections::HashSet::new();
 
-    let mut expanded_items: std::collections::HashMap<i32, Vec<String>> = std::collections::HashMap::new();
-    let mut expanded_lineno: std::collections::HashMap<i32, Vec<usize>> = std::collections::HashMap::new();
+    let mut expanded_items: std::collections::HashMap<i32, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut expanded_lineno: std::collections::HashMap<i32, Vec<usize>> =
+        std::collections::HashMap::new();
 
     let mut current_line_number = if group_number == 0 {
         0
     } else {
         let previous_group_file = format!("compressed/{}/current_line_number", group_number - 1);
         if Path::new(&previous_group_file).exists() {
-            std::fs::read_to_string(previous_group_file)?.trim().parse::<usize>()?
+            std::fs::read_to_string(previous_group_file)?
+                .trim()
+                .parse::<usize>()?
         } else {
-            eprintln!("Warning: previous group's current_line_number file not found. Starting from 0.");
+            eprintln!(
+                "Warning: previous group's current_line_number file not found. Starting from 0."
+            );
             0
         }
     };
 
     for chunk in 0..total_chunks {
         let mut variable_files = std::collections::HashMap::new();
-        for &variable in chunk_variables.get(&chunk).unwrap_or(&std::collections::HashSet::new()) {
-            let file_path = format!("compressed/{}/variable_{}/E{}_V{}", group_number, chunk, variable.0, variable.1);
-            variable_files.insert(variable, std::io::BufReader::new(std::fs::File::open(file_path)?));
+        for &variable in chunk_variables
+            .get(&chunk)
+            .unwrap_or(&std::collections::HashSet::new())
+        {
+            let file_path = format!(
+                "compressed/{}/variable_{}/E{}_V{}",
+                group_number, chunk, variable.0, variable.1
+            );
+            variable_files.insert(
+                variable,
+                std::io::BufReader::new(std::fs::File::open(file_path)?),
+            );
         }
 
         let chunk_filename = format!("compressed/{}/chunk{:04}.eid", group_number, chunk);
@@ -366,7 +453,12 @@ fn process_compressed_chunks(chunks: &[String], group_number: usize) -> Result<(
             let mut type_vars = std::collections::HashMap::new();
 
             for &variable in this_variables {
-                let item = variable_files.get_mut(&variable).unwrap().lines().next().unwrap()?;
+                let item = variable_files
+                    .get_mut(&variable)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()?;
                 let t = get_type(&item);
                 if t == 0 {
                     eprintln!("WARNING, null variable detected in LogCrisp. {} {} {} This variable is not indexed.", chunk, variable.0, variable.1);
@@ -377,8 +469,13 @@ fn process_compressed_chunks(chunks: &[String], group_number: usize) -> Result<(
             }
 
             for (&t, items) in &type_vars {
-                expanded_items.entry(t).or_default().extend(items.iter().cloned());
-                expanded_lineno.entry(t).or_default().extend(std::iter::repeat(current_line_number / ROW_GROUP_SIZE).take(items.len()));
+                expanded_items
+                    .entry(t)
+                    .or_default()
+                    .extend(items.iter().cloned());
+                expanded_lineno.entry(t).or_default().extend(
+                    std::iter::repeat(current_line_number / ROW_GROUP_SIZE).take(items.len()),
+                );
             }
             current_line_number += 1;
         }
@@ -394,16 +491,24 @@ fn process_compressed_chunks(chunks: &[String], group_number: usize) -> Result<(
     let mut compacted_type_files = std::collections::HashMap::new();
     let mut compacted_lineno_files = std::collections::HashMap::new();
     let mut outlier_file = std::fs::File::create(format!("compressed/{}/outlier", group_number))?;
-    let mut outlier_lineno_file = std::fs::File::create(format!("compressed/{}/outlier_lineno", group_number))?;
+    let mut outlier_lineno_file =
+        std::fs::File::create(format!("compressed/{}/outlier_lineno", group_number))?;
     let mut outlier_items = Vec::new();
     let mut outlier_lineno = Vec::new();
 
     for &t in &touched_types {
         if expanded_items[&t].is_empty() {
-            return Err(format!("Error in variable extraction. No items detected for type {}", t).into());
+            return Err(format!(
+                "Error in variable extraction. No items detected for type {}",
+                t
+            )
+            .into());
         }
 
-        let mut paired: Vec<_> = expanded_items[&t].iter().zip(expanded_lineno[&t].iter()).collect();
+        let mut paired: Vec<_> = expanded_items[&t]
+            .iter()
+            .zip(expanded_lineno[&t].iter())
+            .collect();
         paired.sort_unstable_by(|a, b| a.0.cmp(b.0).then_with(|| a.1.cmp(b.1)));
 
         let mut compacted_items = Vec::new();
@@ -422,15 +527,28 @@ fn process_compressed_chunks(chunks: &[String], group_number: usize) -> Result<(
 
         if compacted_items.len() > OUTLIER_THRESHOLD {
             let type_file = compacted_type_files.entry(t).or_insert_with(|| {
-                std::fs::File::create(format!("compressed/{}/compacted_type_{}", group_number, t)).unwrap()
+                std::fs::File::create(format!("compressed/{}/compacted_type_{}", group_number, t))
+                    .unwrap()
             });
             let lineno_file = compacted_lineno_files.entry(t).or_insert_with(|| {
-                std::fs::File::create(format!("compressed/{}/compacted_type_{}_lineno", group_number, t)).unwrap()
+                std::fs::File::create(format!(
+                    "compressed/{}/compacted_type_{}_lineno",
+                    group_number, t
+                ))
+                .unwrap()
             });
 
             for (item, linenos) in compacted_items.iter().zip(compacted_lineno.iter()) {
                 writeln!(type_file, "{}", item)?;
-                writeln!(lineno_file, "{}", linenos.iter().map(|&n| n.to_string()).collect::<Vec<_>>().join(" "))?;
+                writeln!(
+                    lineno_file,
+                    "{}",
+                    linenos
+                        .iter()
+                        .map(|&n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )?;
             }
         } else {
             outlier_items.extend(compacted_items);
@@ -439,16 +557,26 @@ fn process_compressed_chunks(chunks: &[String], group_number: usize) -> Result<(
     }
 
     // Sort and write outliers
-    let mut paired: Vec<_> = outlier_items.into_iter().zip(outlier_lineno.into_iter()).collect();
+    let mut paired: Vec<_> = outlier_items
+        .into_iter()
+        .zip(outlier_lineno.into_iter())
+        .collect();
     paired.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     for (item, linenos) in paired {
         writeln!(outlier_file, "{}", item)?;
-        writeln!(outlier_lineno_file, "{}", linenos.iter().map(|&n| n.to_string()).collect::<Vec<_>>().join(" "))?;
+        writeln!(
+            outlier_lineno_file,
+            "{}",
+            linenos
+                .iter()
+                .map(|&n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )?;
     }
 
     Ok(())
 }
-
 
 #[pymodule]
 #[pyo3(name = "rex")]
