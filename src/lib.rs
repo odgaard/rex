@@ -313,7 +313,7 @@ fn compress_logs(
             let mut epoch_ts = if line.len() >= timestamp_bytes {
                 let extract_timestamp_from_this_line = &line[..timestamp_bytes];
                 match NaiveDateTime::parse_from_str(
-                    extract_timestamp_from_this_line,
+                    extract_timestamp_from_this_line.trim(),
                     &timestamp_format,
                 ) {
                     Ok(dt) => dt.timestamp() as u64,
@@ -383,7 +383,11 @@ fn compress_logs(
     }
 
     let samples_str = samples.join("\n");
-    trainer_wrapper_rust(&samples_str, &template_prefix)?;
+    let result = trainer_wrapper_rust(&samples_str, &template_prefix);
+    println!("made it here");
+
+    let _ = result?;
+    println!("made it here too");
 
     for (chunk_index, chunk) in chunks.iter().enumerate() {
         compress_chunk(chunk_index, chunk, &template_prefix, group_number).map_err(to_pyerr)?;
