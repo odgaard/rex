@@ -123,6 +123,7 @@ fn compressor_wrapper_rust(
             ));
         }
     }
+    println!("compressor_wrapper_rust done");
     Ok(())
 }
 
@@ -139,10 +140,12 @@ fn get_variable_info(
 
     for chunk in 0..total_chunks {
         let variable_tag_file = format!("compressed/{}/variable_{}_tag.txt", group_number, chunk);
+        println!("variable_tag_file: {:?}", variable_tag_file);
         let file = File::open(variable_tag_file)?;
         let reader = BufReader::new(file);
 
         for line in reader.lines() {
+            println!("line: {:?}", line);
             let line = line?;
             let mut parts = line.split_whitespace();
             let variable_str = parts.next().ok_or_else(|| {
@@ -154,20 +157,38 @@ fn get_variable_info(
                 .parse::<i32>()?;
 
             let mut var_parts = variable_str.split('_');
-            let a = var_parts
+
+            let a_part = var_parts
                 .next()
-                .and_then(|s| s.strip_prefix("V"))
                 .ok_or_else(|| {
                     PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid variable format")
-                })?
-                .parse::<i32>()?;
-            let b = var_parts
+                })?;
+            let a = a_part
+                .chars()
+                .skip_while(|c| !c.is_digit(10))
+                .collect::<String>()
+                .parse::<i32>()
+                .map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "Invalid integer in variable format",
+                    )
+                })?;
+
+            let b_part = var_parts
                 .next()
-                .and_then(|s| s.strip_prefix("V"))
                 .ok_or_else(|| {
                     PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid variable format")
-                })?
-                .parse::<i32>()?;
+                })?;
+            let b = b_part
+                .chars()
+                .skip_while(|c| !c.is_digit(10))
+                .collect::<String>()
+                .parse::<i32>()
+                .map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "Invalid integer in variable format",
+                    )
+                })?;
 
             let variable = (a, b);
             variable_to_type.insert(variable, tag);
@@ -186,7 +207,7 @@ fn compress_chunk(
     group_number: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let dir_name = format!("variable_{}", chunk_file_counter);
-    let tag_name = format!("variable_tag_{}.txt", chunk_file_counter);
+    let tag_name = format!("variable_{}_tag.txt", chunk_file_counter);
 
     // Remove existing directory and file
     let dir_path = Path::new(&dir_name);
@@ -201,6 +222,8 @@ fn compress_chunk(
     // Create the directory
     std::fs::create_dir_all(&dir_path)?;
 
+    println!("compressing chunk");
+
     let chunk_filename = format!("compressed/{}/chunk{:04}", group_number, chunk_file_counter);
     compressor_wrapper_rust(
         current_chunk,
@@ -214,14 +237,27 @@ fn compress_chunk(
     let target_dir = Path::new("compressed")
         .join(group_number.to_string())
         .join(format!("variable_{}", chunk_file_counter));
+    println!("source_dir: {:?}", source_dir);
+    println!("target_dir: {:?}", target_dir);
     std::fs::rename(&source_dir, &target_dir)?;
 
     let source_tag = tag_path;
     let target_tag = Path::new("compressed")
         .join(group_number.to_string())
         .join(format!("variable_{}_tag.txt", chunk_file_counter));
+
+    if !source_tag.exists() {
+        return Err(format!("Source tag file does not exist: {:?}", source_tag).into());
+    }
+
+    if target_tag.exists() {
+        println!("Target tag file already exists: {:?}", target_tag);
+    }
+    println!("source_tag: {:?}", source_tag);
+    println!("target_tag: {:?}", target_tag);
     std::fs::rename(&source_tag, &target_tag)?;
 
+    println!("compress_chunk done");
     Ok(())
 }
 
@@ -289,7 +325,9 @@ fn compress_logs(
     let mut log_vector = Vec::new();
 
     for file_path in files {
+        println!("Processing file: {}", file_path);
         let file = File::open(&file_path)?;
+        println!("Opened file: {}", file_path);
         let reader: Box<dyn BufRead> =
             if Path::new(&file_path).extension().and_then(|s| s.to_str()) == Some("zst") {
                 Box::new(BufReader::new(Decoder::new(file).map_err(|e| {
@@ -392,6 +430,7 @@ fn compress_logs(
     for (chunk_index, chunk) in chunks.iter().enumerate() {
         compress_chunk(chunk_index, chunk, &template_prefix, group_number).map_err(to_pyerr)?;
     }
+    println!("Finished compressing chunks");
 
     process_compressed_chunks(&chunks, group_number).map_err(to_pyerr)?;
     Ok(())
@@ -402,6 +441,7 @@ fn process_compressed_chunks(
     group_number: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let total_chunks = chunks.len();
+    println!("total_chunks: {}", total_chunks);
     let (chunk_variables, eid_to_variables) = get_variable_info(total_chunks, group_number)?;
     let mut touched_types = std::collections::HashSet::new();
 
@@ -409,6 +449,9 @@ fn process_compressed_chunks(
         std::collections::HashMap::new();
     let mut expanded_lineno: std::collections::HashMap<i32, Vec<usize>> =
         std::collections::HashMap::new();
+
+
+    //println!("total_chunks: {}", total_chunks);
 
     let mut current_line_number = if group_number == 0 {
         0
@@ -426,6 +469,8 @@ fn process_compressed_chunks(
         }
     };
 
+    println!("current_line_number: {}", current_line_number);
+
     for chunk in 0..total_chunks {
         let mut variable_files = std::collections::HashMap::new();
         for &variable in chunk_variables
@@ -442,6 +487,8 @@ fn process_compressed_chunks(
             );
         }
 
+        println!("variable_files: {:?}", variable_files);
+
         let chunk_filename = format!("compressed/{}/chunk{:04}.eid", group_number, chunk);
         let eid_file = std::fs::File::open(chunk_filename)?;
         let eid_reader = std::io::BufReader::new(eid_file);
@@ -452,17 +499,24 @@ fn process_compressed_chunks(
                 current_line_number += 1;
                 continue;
             }
+            //println!("eid: {}", eid);
 
             let this_variables = eid_to_variables.get(&eid).unwrap();
             let mut type_vars = std::collections::HashMap::new();
 
             for &variable in this_variables {
+                println!("variable: {:?}", variable);
+                println!("eid: {:?}", eid);
+                println!("chunk: {:?}", chunk);
                 let item = variable_files
                     .get_mut(&variable)
-                    .unwrap()
+                    .unwrap();
+                println!("item: {:?}", item);
+                let item = item
                     .lines()
                     .next()
                     .unwrap()?;
+                println!("item: {:?}", item);
                 let t = get_type(&item);
                 if t == 0 {
                     eprintln!("WARNING, null variable detected in LogCrisp. {} {} {} This variable is not indexed.", chunk, variable.0, variable.1);
@@ -484,6 +538,8 @@ fn process_compressed_chunks(
             current_line_number += 1;
         }
     }
+
+    println!("touched_types: {:?}", touched_types);
 
     // Write current_line_number to a file
     std::fs::write(
